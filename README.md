@@ -1,1 +1,1 @@
-# 2016 US Election Project
+# 2016 U.S. Election Project
