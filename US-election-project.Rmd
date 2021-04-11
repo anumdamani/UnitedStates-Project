@@ -1,0 +1,2159 @@
+---
+title: "Final Project"
+author: "Anum Damani, Amiya Dutta, Alec Dewar, all in 131"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, 
+                      cache = T,
+                      fig.align = 'center',
+                      fig.height = 4, 
+                      fig.width = 4)
+
+# library(pander)
+# library(tidyverse)
+# library(ggmap)
+# library(modelr)
+
+
+library(pander)
+library(tidyverse)
+library(ggmap)
+library(modelr)
+library(class)
+library(ISLR)
+library(boot)
+library(dplyr)
+library(MASS)
+library(ROCR)
+
+library(tree)
+library(maptree)
+
+library(splines)
+library(forcats)
+
+```
+
+
+
+1. What makes voter behavior prediction (and thus election forecasting) a hard problem?
+
+Voter behavior is hard to predict for a number of reasons. One being because voter opinions can change over time. People may say that they are going to vote for a candidate and then not vote at all. Supporters of certain candidates may be more likely to not answer phones calls and be unwilling to share their support. This creates non response bias that can lead to inaccurate predictions.
+
+2. What was unique to Nate Silver's approach in 2012 that allowed him to achieve good predictions?
+
+Silver uses a hierarchical modeling technique to predict election outcomes. He models voting behavior overtime as well as models the poll data for the national level and the state level. Unlike a simple prediction based on the results of polls, Silver attempted to find the bias the polls had.
+
+3. What went wrong in 2016? What do you think should be done to make future predictions better?
+
+In 2016, almost all polls severely underpredicted the support for Trump and did not account for the fact that many Hilary Clinton "supporters" did not end up voting at all. Many people that said they were voting for Gary Johnson in the polls ended up voting for Trump in the actual election. The polls generally have bias so understanding the ways they are biased and accounting for it can lead us to better predictions.
+
+
+```{r}
+project <- load("/Users/anumdamani/Downloads/project_data.RData")
+print(project)
+
+```
+
+
+
+```{r}
+#filter(election_raw, !is.na(county)) %>% 
+  #head() %>% 
+  #pander()
+```
+
+
+
+4. Inspect rows with `fips=2000`. Provide a reason for excluding them. Drop these observations -- please write over `election_raw` -- and report the data dimensions after removal. 
+```{r}
+election_raw %>%
+  filter(fips == 2000) 
+
+election_raw <- election_raw %>%
+  subset(fips != 2000)
+
+election_raw
+
+```
+
+It looks like the fips = 2000 rows are excluded because the counties are unknown, so the votes can't be counted correctly.
+
+After removing the fips = 2000, the data set has 5 columns and 18,345 rows.
+
+
+
+```{r}
+# census %>% 
+#   dplyr::select(1:6) %>% 
+#   head() %>% 
+#   pander(digits = 15)
+```
+
+
+```{r}
+#census_meta %>% head() %>% pander()
+```
+
+\newpage
+## Data preprocessing
+
+5. Separate the rows of `election_raw` into separate federal-, state-, and county-level data frames:
+
+    * Store federal-level tallies as `election_federal`.
+    
+    * Store state-level tallies as `election_state`.
+    
+    * Store county-level tallies as `election`. Coerce the `fips` variable to numeric.
+```{r}
+election_federal <- election_raw %>%
+  subset(state == "US")
+
+election_state <- election_raw %>%
+  filter(state != "US", is.na(county)) 
+  
+election <- election_raw %>%
+  filter(state != "US", !is.na(county))
+
+# for county-level tallies
+election <- election %>%
+  mutate(fips1 = as.numeric(fips)) %>%
+  dplyr::select(-fips)
+
+#typeof(election$fips1)
+```
+
+6. How many named presidential candidates were there in the 2016 election? Draw a bar graph of all votes received by each candidate, and order the candidate names by decreasing vote counts. (You may need to log-transform the vote axis.)
+
+```{r}
+#election_federal 
+
+#?barplot
+#barplot(log(election_federal$votes), xlab = "Candidates", ylab = "Log of Votes",
+        #ylim = c(0, 20), names.arg = election_federal$candidate)
+
+# use ggplot
+ggplot(data = election_federal, aes(x = reorder(candidate, -log(votes)), y = log(votes))) +
+  geom_bar(stat = "identity") +
+  ggtitle("LOG NUMBER OF VOTES PER PRESIDENTIAL CANDIDATE") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+There were 32 named presidential candidates.
+
+
+7. Create `county_winner` and `state_winner` by taking the candidate with the highest proportion of votes. (Hint: to create `county_winner`, start with `election`, group by `fips`, compute `total` votes, and `pct = votes/total`. Then choose the highest row using `slice_max` (variable `state_winner` is similar).)
+```{r}
+county_winner <- election %>%
+  group_by(fips1) %>%
+  mutate(total = sum(votes), pct=votes/total) %>%
+  slice_max(pct)
+  
+state_winner <- election_state %>% 
+  group_by(state) %>%
+  mutate(total=sum(votes), pct=votes/total) %>%
+  slice_max(pct)
+
+```
+
+# Visualization
+Here you'll generate maps of the election data using `ggmap`. 
+```{r}
+#install.packages("maps")
+#load(maps)
+states <- map_data("state")
+
+ggplot(states) + 
+  geom_polygon(aes(x = long, 
+                   y = lat, 
+                   fill = region, 
+                   group = group), 
+               color = "white") + 
+  coord_fixed(1.3) + # avoid stretching
+  guides(fill=FALSE) + # no fill legend
+  theme_nothing() # no axes
+```
+
+8. Draw a county-level map with `map_data("county")` and color by county.
+
+```{r}
+counties <- map_data("county")
+
+ggplot(counties) + 
+  geom_polygon(aes(x = long, 
+                   y = lat, 
+                   fill = subregion, 
+                   group = group), 
+               color = "white") + 
+  coord_fixed(1.3) + # avoid stretching
+  guides(fill=FALSE) + # no fill legend
+  theme_nothing() # no axes
+```
+
+
+9. Use the following function to create a `fips` variable in the `states` data frame with values that match the `fips` variable in `election_state`.
+```{r}
+name2abb <- function(statename){
+  ix <- match(statename, tolower(state.name))
+  out <- state.abb[ix]
+  return(out)
+}
+
+# ?state.abb
+# ?match
+# ?tolower
+# election_state
+# election_federal
+# 
+# election_federal %>%
+#   mutate(fips1 = name2abb(election_state))
+
+states <- states %>%
+  mutate(fips = name2abb(region))
+```
+
+
+
+10. Use `left_join` to merge the tables and use the result to create a map of the election results by state. Your figure will look similar to this state level [New York Times map](https://www.nytimes.com/elections/results/president). (Hint: use `scale_fill_brewer(palette="Set1")` for a red-and-blue map.)
+
+
+```{r}
+merge_tables <- left_join(states, state_winner, by = c("fips" = "state"))
+
+
+# ggplot(states) + 
+#   geom_polygon(aes(x = long, 
+#                    y = lat,
+#                    group = group), 
+#                color = "white") + 
+#   coord_fixed(1.3) + # avoid stretching
+#   
+#   guides(fill = merge_tables$candidate) + 
+#   scale_fill_brewer(palette="Set1") +
+#   theme_nothing() # no axes
+
+#?scale_fill_brewer
+
+distinct_states <- merge_tables %>%
+  dplyr::select(region, candidate) %>%
+  distinct() %>%
+  na.omit()
+
+blue_states <- distinct_states %>%
+  filter(candidate == "Hillary Clinton")
+red_states <- distinct_states %>%
+  filter(candidate == "Donald Trump")
+
+# blue_states <- c("maine", "new hampshire", "vermont", "new york", "massachusetts", "connecticut", "rhode island", "new jersey", "maryland", "virginia", "delaware", "illinois", "minnesota", "colorado", "new mexico", "hawaii", "california", "nevada", "oregon", "washington")
+# red_states <- c("pennsylvania", "west virginia", "north carolina", "south carolina", "georgia", "florida", "ohio", "kentucky", "tennessee", "alabama", "michigan", "indiana", "mississippi", "louisiana", "arkansas", "missouri", "iowa", "wisconsin", "texas", "oklahoma", "kansas", "nebraska", "north dakota", "south dakota", "montana", "wyoming", "idaho", "utah", "arizona", "alaska") 
+
+
+ggplot(states, aes(x=long, y=lat, group = group)) +
+  coord_fixed(1.3) +
+  geom_polygon(fill="grey", colour = "white") +
+  geom_polygon(fill="blue", data = filter(states, region %in% blue_states$region)) +
+  geom_polygon(fill="red", data = filter(states, region %in% red_states$region)) +
+  ggtitle("MAP OF ELECTION RESULTS BY STATE") +
+  scale_fill_brewer(palette="Set1") 
+```
+
+11. Now create a county-level map. The county-level map data does not have a `fips` value, so to create one, use information from `maps::county.fips`: split the `polyname` column to `region` and `subregion` using `tidyr::separate`, and use `left_join()` to combine `county.fips` with the county-level map data. Then construct the map. Your figure will look similar to county-level [New York Times map](https://www.nytimes.com/elections/results/president).
+```{r}
+
+split_region_subregion <- maps::county.fips %>%
+  tidyr::separate(col = polyname, into = c("region", "subregion"), sep = ',')
+
+
+
+merge_counties <- left_join(county_winner, split_region_subregion, by = c("county" = "subregion")) 
+
+distinct_counties <- merge_counties %>%
+  dplyr::select(county, candidate) #%>%
+  #na.omit() 
+distinct_counties <- distinct_counties %>%
+  mutate(lowercase = tolower(county))
+  
+
+
+blue_counties <- distinct_counties %>%
+  filter(candidate == "Hillary Clinton")
+
+red_counties <- distinct_counties %>%
+  filter(candidate == "Donald Trump")
+
+#counties$subregion
+x <- blue_counties$lowercase
+
+y <- str_remove(x, " county")
+
+m <- red_counties$lowercase
+
+n <- str_remove(m, " county")
+
+# county <- maps::county.fips %>%
+#   separate(polyname, c("region", "subregion"), sep=",") %>%
+#   mutate(fips=factor(fips)) %>%
+#   left_join(counties, by=c("subregion","region")) %>%
+#   left_join(county_winner, by="fips")
+# 
+# county <- maps::county.fips %>%
+#   separate(polyname, c("region", "subregion"), sep=",") %>%
+#   mutate(fips=factor(fips)) %>%
+#   left_join(county_winner, split_region_subregion, by = c("county" = "subregion")) 
+# 
+# 
+# ggplot(data=county) +
+#   geom_polygon(aes(x=long, y=lat, fill=candidate, group=group),color="white") +
+#   coord_fixed(1.3) +
+#   guides(fill=FALSE)
+
+ggplot(counties, aes(x=long, y=lat, group = group)) +
+  coord_fixed(1.3) +
+  geom_polygon(fill="grey", colour = "white") +
+  geom_polygon(fill="blue", data = filter(counties, counties$subregion %in% y)) +
+  geom_polygon(fill="red", data = filter(counties, counties$subregion %in% n)) +
+  scale_fill_brewer(palette="Set1") +
+  ggtitle("ELECTION RESULTS BY COUNTY") +
+  guides(fill = FALSE)
+
+
+
+
+```
+  
+12. Create a visualization of your choice using `census` data.
+```{r}
+## CHANGE EVAL OPTION WHEN COMPLETE
+#install.packages("leaflet")
+
+
+census_nona <- census %>%
+  na.omit("White", "TotalPop")
+# plot of demographics by county
+census_whitepct <- census_nona %>%
+  group_by(County) %>%
+  mutate(totalwhite = sum(TotalPop*(0.01*White)), total = sum(TotalPop), whitepct =
+           totalwhite/total) %>%
+  slice_max(whitepct)
+  
+
+# county <- map_data("county")
+# 
+# ggplot(counties) + 
+#   geom_polygon(aes(x = long, 
+#                    y = lat, 
+#                    fill = subregion, 
+#                    group = group), 
+#                color = "white") + 
+#   coord_fixed(1.3) + # avoid stretching
+#   guides(fill=FALSE) + # no fill legend
+#   theme_nothing() # no axes
+
+
+
+# WHITE PEOPLE BY STATE
+
+# library
+library(tidyverse)
+#install.packages("geojsonio")
+#install.packages("RColorBrewer")
+#install.packages("rgdal")
+library(geojsonio)
+library(RColorBrewer)
+library(rgdal)
+
+# Download the Hexagones boundaries at geojson format here: https://team.carto.com/u/andrew/tables/andrew.us_states_hexgrid/public/map.
+
+# Load this file. (Note: I stored in a folder called DATA)
+spdf <- geojson_read("~/Downloads/us_states_hexgrid.geojson.json",  what = "sp")
+
+# Bit of reformating
+spdf@data = spdf@data %>%
+  mutate(google_name = gsub(" \\(United States\\)", "", google_name))
+
+# Show it
+#plot(spdf)
+
+# I need to 'fortify' the data to be able to show it with ggplot2 (we need a data frame format)
+library(broom)
+spdf@data = spdf@data %>% 
+  mutate(google_name = gsub(" \\(United States\\)", "", google_name))
+spdf_fortified <- tidy(spdf, region = "google_name")
+
+# Calculate the centroid of each hexagon to add the label:
+library(rgeos)
+centers <- cbind.data.frame(data.frame(gCentroid(spdf, byid=TRUE), id=spdf@data$iso3166_2))
+ 
+# Now I can plot this shape easily as described before:
+library(mapproj)
+# ggplot() +
+#   geom_polygon(data = spdf_fortified, aes( x = long, y = lat, group = group), fill="skyblue",color="white") +
+#   geom_text(data=centers, aes(x=x, y=y, label=id)) +
+#   theme_void() +
+#   coord_map()
+
+# census_whitepct %>% 
+#   ggplot(aes(x = whitepct)) + 
+#     geom_histogram(bins=20, fill='#69b3a2', color='white') + 
+#     scale_x_continuous(breaks = seq(1,30))
+
+
+# Merge geospatial and numerical information
+spdf_fortified <- spdf_fortified %>%
+  left_join(., census_whitepct, by = c("id" = "State")) 
+ 
+# Make a first chloropleth map
+ggplot() +
+  geom_polygon(data = spdf_fortified, aes(fill = whitepct, x = long, y = lat, group = group)) +
+  geom_text(data=centers, aes(x=x, y=y, label=id)) +
+  #scale_fill_gradient(trans = "log") +
+  #geom_text(data = census_whitepct, aes(x=State, y=whitepct, label="State")) +
+  theme_void() +
+  coord_map() +
+  ggtitle("Density of White Population By State")
+
+# ggplot() +
+#   geom_polygon(data = spdf_fortified, aes(fill = whitepct, x = long, y = lat, group = group)) +
+#   geom_text(data=centers, aes(x=x, y=y, label=id)) +
+#   scale_fill_gradient(trans = "log") +
+#   #geom_text(data = census_whitepct, aes(x=State, y=whitepct, label="State")) +
+#   theme_void() +
+#   coord_map() +
+#   ggtitle("Density of White Population By State")
+
+```
+
+
+13. The `census` data contains high resolution information (more fine-grained than county-level). Aggregate the information into county-level data by computing population-weighted averages of each attribute for each county by carrying out the following steps:
+    
+* Clean census data, saving the result as `census_del`: 
+  
+   + filter out any rows of `census` with missing values;
+   + convert `Men`, `Employed`, and `Citizen` to percentages;
+   + compute a `Minority` variable by combining `Hispanic`, `Black`, `Native`, `Asian`, `Pacific`, and remove these variables after creating `Minority`; and
+   + remove `Walk`, `PublicWork`, and `Construction`.
+ 
+* Create population weights for sub-county census data, saving the result as `census_subct`: 
+    + group `census_del` by `State` and `County`;
+    + use `add_tally()` to compute `CountyPop`; 
+    + compute the population weight as `TotalPop/CountyTotal`;
+    + adjust all quantitative variables by multiplying by the population weights.
+    
+* Aggregate census data to county level, `census_ct`: group the sub-county data `census_subct` by state and county and compute population-weighted averages of each variable by taking the sum (since the variables were already transformed by the population weights)
+    
+* Print the first few rows and columns of `census_ct`. 
+```{r}
+# census_del <- census %>%
+#   na.omit() %>%
+#   mutate(Men_pct = Men/TotalPop, Employed_pct  = Employed/TotalPop, Citizen_pct = Citizen/TotalPop) %>%
+#   mutate(Minority = Hispanic + Black + Native + Asian + Pacific) %>%
+#   select(-c(Hispanic, Black, Native, Asian, Pacific, Walk, PublicWork, Construction))
+# 
+# census_subct <- census_del %>%
+#   group_by(State, County) %>%
+#   add_tally(sum(TotalPop)) %>%
+#   rename(CountyPop = n) %>%
+#   mutate(Pop_wt = TotalPop/CountyPop) %>%
+#   transmute(TotalPop = TotalPop*Pop_wt, Men = Men*Pop_wt, Women = Women*Pop_wt, White = White*Pop_wt, Citizen = Citizen*Pop_wt, Income = Income*Pop_wt, IncomeErr = IncomeErr*Pop_wt, IncomePerCap = IncomePerCap*Pop_wt, IncomePerCapErr = IncomePerCapErr*Pop_wt, Poverty = Poverty*Pop_wt, ChildPoverty = ChildPoverty*Pop_wt, Professional = Professional*Pop_wt, Service = Service*Pop_wt, Office = Office*Pop_wt, Production = Production*Pop_wt, Drive = Drive*Pop_wt, Carpool = Carpool*Pop_wt, Transit = Transit*Pop_wt, OtherTransp = OtherTransp*Pop_wt, WorkAtHome = WorkAtHome*Pop_wt, MeanCommute = MeanCommute*Pop_wt, Employed = Employed*Pop_wt, PrivateWork = PrivateWork*Pop_wt, SelfEmployed = SelfEmployed*Pop_wt, FamilyWork = FamilyWork*Pop_wt, Unemployment = Unemployment*Pop_wt, Minority = Minority*Pop_wt)
+# 
+# 
+# 
+# census_group <- census_subct %>%
+#   group_by(State, County)
+# 
+# census_ct <- aggregate(census_group[,3:28], by =  list(census_group$State, census_group$County), FUN = sum)
+# census_ct <- census_ct %>%
+#   group_by(Group.1)
+# head(census_ct)
+#rename(County = Group.1)
+#head(census_ct)
+
+#?aggregate
+
+# Office hours:
+# Create census.del:
+census.del <- census %>% 
+  filter(complete.cases(.)) %>%
+  mutate(Men=Men/TotalPop*100,
+         Employed=Employed/TotalPop*100,
+         Citizen=Citizen/TotalPop*100,
+         Minority=Hispanic+Black+Native+Asian+Pacific) %>%
+  dplyr::select(-Women, -Hispanic, -Black, -Native, -Asian, -Pacific,
+-Walk, -PublicWork, -Construction)
+# Create census.subct:
+census.subct <- census.del %>% 
+  group_by(State, County) %>%
+  add_tally(TotalPop) %>%
+  mutate(CountyTotal=n) %>%
+  mutate(Weight = TotalPop/CountyTotal)%>%
+  dplyr::select(-n)
+
+#census.subct
+# Create census.ct:
+census.ct <- census.subct %>%
+  summarise_at(vars(TotalPop:CountyTotal),
+               funs(weighted.mean(., Weight))) %>%
+  ungroup()
+head(census.ct) %>%
+  pander()
+
+# census_subct %>%
+#   group_by(State, County) %>%
+  
+# Create census.del:
+# census.del <-census %>% filter(complete.cases(.)) %>%
+# mutate(Men=Men/TotalPop*100,
+# Employed=Employed/TotalPop*100,
+# Citizen=Citizen/TotalPop*100,
+# Minority=Hispanic+Black+Native+Asian+Pacific) %>%
+# dplyr::select(-Women, -Hispanic, -Black, -Native, -Asian, -Pacific,
+# -Walk, -PublicWork, -Construction)
+# # Create census.subct:
+# census.subct <-
+# census.del %>% group_by(State, County) %>%
+# add_tally(TotalPop) %>%
+# mutate(CountyTotal=n) %>%
+# mutate(Weight = TotalPop/CountyTotal)%>%
+# dplyr::select(-n)
+# census.subct
+# 
+# # Create census.ct:
+# census.ct <-
+# census.subct %>%
+# summarise_at(vars(TotalPop:CountyTotal),
+# funs(weighted.mean(., Weight))) %>%
+# ungroup()
+# census.ct
+
+  
+```
+
+14. If you were physically located in the United States on election day for the 2016 presidential election, what state and county were you in? Compare and contrast the results and demographic information for this county with the state it is located in. If you were not in the United States on election day, select any county. Do you find anything unusual or surprising? If so, explain; if not, explain why not.
+```{r}
+# Anum and Alec
+# la_county <- census.ct %>%
+#   filter(County == "Los Angeles")
+# #la_county
+# 
+# # Amiya
+# santa_clara <- census.ct %>%
+#   filter(County == "Santa Clara")
+# #santa_clara
+# 
+# 
+# california_data <- census.ct %>%
+#   filter(State == "California")
+# #california_data
+```
+
+Amiya was in Santa Clara County, and Anum & Alec were in Los Angeles County.
+The majority of Santa Clara County and Los Angeles County voted for Hillary Clinton. Most of the people in Santa Clara County and Los Angeles County are minorities. 
+
+Santa Clara County voted for Hillary Clinton, and California also voted for Hillary Clinton. Santa Clara is mostly comprised of non-white citizens, which I think  is one factor that caused the county to go blue instead of red.
+
+Los Angeles County voted for Hillary Clinton, and California voted to Hillary Clinton, too. Like Santa Clara County, Los Angeles County is mostly comprised of minorities, which I think is a factor that caused the county to go blue instead of red.
+
+We don't think this is unusual or surprising because Santa Clara County and Los Angeles County are both heavily populated by minorities.
+
+# Exploratory analysis
+
+15. Carry out PCA for both county & sub-county level census data. Compute the first two principal components PC1 and PC2 for both county and sub-county respectively. Discuss whether you chose to center and scale the features and the reasons for your choice. Examine and interpret the loadings.
+```{r, fig.height = 3}
+
+
+census_std <- census.ct %>%
+  dplyr::select(-c("State", "County")) %>% # drop pop weight and county pop
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+# compute principal components
+x_svd <- svd(census_std)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:2]
+#pc_loadings
+
+census_pc <- as.matrix(census_std) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:2, sep = '')
+
+z_mx <- census_std %*% x_svd$v
+
+# loadings
+pc_loadings %>%
+  as.data.frame() %>%
+  mutate(variable = colnames(census_std)) %>%
+  rename(PC1 = V1, PC2 = V2) %>%
+  gather(key = 'PC', value = 'Loading', 1:2) %>%
+  arrange(variable) %>%
+  ggplot(aes(x = variable, y = Loading)) +
+  geom_point(aes(shape = PC)) +
+  theme_bw() +
+  geom_hline(yintercept = 0, color = 'blue') +
+  geom_path(aes(linetype = PC, group = PC, col = PC)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("FIRST 2 PC LOADINGS FOR COUNTY LEVEL CENSUS DATA") +
+  labs(x = '')
+```
+
+For the county level data, we decided to center and scale because each county isn't the same size, so we figured that counties with bigger populations could skew the results.
+
+For PC 1: ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, and White seem to influence the PC the most. Broad categories of variables that affect PC1 are demographics (minority and white), employment (employed, professional, unemployment), and income (income, incomepercap). 
+
+For PC 2: Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, and WorkAtHome seem to influence the PC the most. Broad categories of variables that affect PC2 are type of work (familywork, privatework, workathome, office) and income (income, incomeerr).
+
+
+```{r}
+
+# sub-county level
+
+census_sub_std <- census.subct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("CensusTract", "State", "County")) %>%
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+# used in question 16 so pc_vars_subcounty and census_sub_std had same # of columns
+census_sub_std1 <- census.subct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("CensusTract", "State", "County", "Weight")) %>%
+  na.omit() %>%
+  scale(center=T, scale=T)
+
+# compute principal components
+x_svd <- svd(census_sub_std)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:2]
+#pc_loadings
+
+census_pc <- as.matrix(census_sub_std) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:2, sep = '')
+
+z_mx <- census_sub_std %*% x_svd$v
+
+# loadings
+pc_loadings %>%
+  as.data.frame() %>%
+  mutate(variable = colnames(census_sub_std)) %>%
+  rename(PC1 = V1, PC2 = V2) %>%
+  gather(key = 'PC', value = 'Loading', 1:2) %>%
+  arrange(variable) %>%
+  ggplot(aes(x = variable, y = Loading)) +
+  geom_point(aes(shape = PC)) +
+  theme_bw() +
+  geom_hline(yintercept = 0, color = 'blue') +
+  geom_path(aes(linetype = PC, group = PC, col = PC)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("FIRST 2 PC LOADINGS FOR SUB-COUNTY LEVEL CENSUS DATA") +
+  labs(x = '')
+```
+Sub-county data: For the subcounty level data, we decided to center and scale because each town isn't the same size, so we figured that towns with bigger populations could skew the results.
+
+For PC 1: ChildPoverty, Employed, Income, IncomeErr, IncomerPerCap, IncomePerCapErr, Minority, Poverty, Professional, Service, Unemployment, and White seem to influence the PC the most. Broad categories of variables that affect PC1 are demographics (minority and white), employment (employed, professional, unemployment), and income (income, incomerr, incomepercap, incomepercaperr). 
+
+For PC 2: Citizen, CountyTotal, Drive, IncomeErr, MeanCommute, Minority, Production, Transit, Weight, and White seem to influence the PC the most. There don't seem to be obvious broad categories like in the other PCs, but MeanCommute and Transit can probably be grouped, which affect PC2.
+
+16. Determine the minimum number of PCs needed to capture 90% of the variance for both the county and sub-county analyses. Plot the proportion of variance explained and cumulative variance explained for both county and sub-county analyses.
+```{r}
+# county data
+pc_vars_county <- x_svd$d^2/(nrow(as.matrix(census_std)) - 1)
+n_pc <- length(pc_vars_county)
+
+tibble(PC = n_pc,
+       Proportion = pc_vars_county/sum(pc_vars_county)) %>%
+  mutate(Cumulative = cumsum(Proportion)) %>%
+  gather(key = 'measure', value = 'Variance Explained', 2:3) %>%
+  ggplot(aes(x = PC, y = `Variance Explained`)) +
+  geom_point() +
+  geom_path() +
+  facet_wrap(~ measure) +
+  theme_bw() +
+  scale_x_continuous(breaks = 1:30, labels = as.character(1:30)) + 
+  ggtitle("PROPORTION OF VARIANCE EXPLAINED & CUMULATIVE VARIANCE FOR COUNTY")
+# min num of PCs to capture 90% of variance: 15
+#length(1:min(dim(as.matrix(census_std))))
+
+# sub-county data
+
+pc_vars_subcounty <- x_svd$d^2/(nrow(as.matrix(census_sub_std1)) - 1)
+tibble(PC = 1:n_pc,
+       Proportion = pc_vars_subcounty/sum(pc_vars_subcounty)) %>%
+  mutate(Cumulative = cumsum(Proportion)) %>%
+  gather(key = 'measure', value = 'Variance Explained', 2:3) %>%
+  ggplot(aes(x = PC, y = `Variance Explained`)) +
+  geom_point() +
+  geom_path() +
+  facet_wrap(~ measure) +
+  theme_bw() +
+  scale_x_continuous(breaks = 1:30, labels = as.character(1:30)) +
+  ggtitle("PROPORTION OF VARIANCE EXPLAINED & CUMULATIVE VARIANCE FOR SUB-COUNTY")
+
+# min num of PCs to capture 90% of the variance: 15
+
+
+
+#length(1:min(dim(as.matrix(census_sub_std1))))
+
+
+
+
+
+```
+The minimum number of PCs to capture 90% of the variance for county level data is 28.
+The minimum number of PCs to capture 90% of the variance for sub-county level data is 15.
+
+
+17. With `census_ct`, perform hierarchical clustering with complete linkage.  Cut the tree to partition the observations into 10 clusters. Re-run the hierarchical clustering algorithm using the first 5 principal components the county-level data as inputs instead of the original features. Compare and contrast the results. For both approaches investigate the cluster that contains San Mateo County. Which approach seemed to put San Mateo County in a more appropriate cluster? Comment on what you observe and discuss possible explanations for these observations.
+```{r}
+
+census_ct <- census.ct
+# hierarchical clustering with complete linkage
+census_ct_std <- census.ct %>%
+  na.omit()
+
+d_mx_clust <- dist(census_ct_std, method = 'euclidean')
+
+# compute hierarchical clustering
+hclust_out <- hclust(d_mx_clust, method = 'complete')
+
+clusters <- cutree(hclust_out, k = 10) %>% 
+  factor(labels = paste('cluster', 1:10))
+
+# count number of data points per cluster
+#print("Number of points per cluster using hierarchical clustering: ")
+#tibble(clusters) %>% count(clusters) %>% pander()
+
+# determining which cluster San Mateo is in
+cluster.SM_clust <- clusters[which(census_ct$Group.2 == "San Mateo")]
+#cluster.SM_clust
+index <- which(clusters == cluster.SM_clust)
+# San Mateo is in cluster 2
+
+# with 5 PCs
+census_std_1 <- census.ct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("State", "County")) %>%
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+
+# compute principal components
+x_svd <- svd(census_std_1)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:5]
+#pc_loadings
+
+census_pc <- as.matrix(census_std_1) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:5, sep = '')
+
+z_mx <- census_std_1 %*% x_svd$v
+
+# hierarchical clustering for PC5
+
+# error: vector memory exhausted (limit reached?) 
+# ^^ FIXED! had to use census.ct, NOT census.del
+d_mx_pc <- dist(census_std_1, method = 'euclidean')
+#dim(census_std_1)
+
+# compute hierarchical clustering
+hclust_out_pc <- hclust(d_mx_pc, method = 'complete')
+
+clusters_pc <- cutree(hclust_out_pc, k = 10) %>% 
+  factor(labels = paste('cluster', 1:10))
+
+# count number of data points per cluster
+print("Number of data points per cluster using first hierarchical clustering: ")
+tibble(clusters) %>% count(clusters) %>% pander()
+
+print("Number of data points per cluster using first 5 PCs: ")
+tibble(clusters_pc) %>% count(clusters_pc) %>% pander()
+
+
+# determine which cluster San Mateo is in for PC clustering
+cluster.SM_pc <- clusters_pc[which(census_ct$Group.2 == "San Mateo")]
+#cluster.SM_pc
+index <- which(clusters_pc == cluster.SM_pc)
+# San Mateo is in cluster 1
+
+# hclust method: comparing SMC to other obs in that cluster
+census_hclust <- census.ct %>%
+  mutate(cluster = clusters) 
+
+census_compare_hclust <- census_hclust %>%
+  filter(cluster == "cluster 2") %>%
+  dplyr::select(c(White, Income, Employed, Transit)) %>%
+  na.omit() %>%
+  summarize(White = mean(White), Income = mean(Income), Employed = mean(Employed),
+            Transit = mean(Transit))
+
+
+
+# White: 54.87, Income = 67645, Employed = 48, Transit = 7
+
+# comparing to San Mateo:
+SMC <- census.ct %>%
+  filter(County == "San Mateo") %>%
+  dplyr::select(c(White, Income, Employed, Transit))
+
+
+# San Mateo: White: 40.63, Income = 100370, Employed = 51.7, Transit = 9.25
+
+# PC method: comparing SMC to other obs in that cluster
+census_pc <- census.ct %>%
+  mutate(cluster = clusters_pc) 
+
+census_compare_pc <- census_pc %>%
+  filter(cluster == "cluster 7") %>%
+  dplyr::select(c(White, Income, Employed, Transit)) %>%
+  na.omit() %>%
+  summarize(White = mean(White), Income = mean(Income), Employed = mean(Employed),
+            Transit = mean(Transit))
+
+
+
+# PC method: White: 53, Income = 88790, Employed = 51.5, Transit = 20.6
+print("Averages for San Mateo County")
+SMC %>% pander()
+
+print("Averages for Hierarchical Cluster with San Mateo County")
+census_compare_hclust %>% pander()
+
+print("Averages for PC 5 Cluster with San Mateo County")
+census_compare_pc %>% pander()
+
+
+
+```
+
+Compare and contrast: For hierarchical clustering, the majority of the points were in cluster 1, with the next most populous cluster being cluster 3. San Mateo was in cluster 2. For clustering using the first 5 PCs, cluster 1 was by far the biggest, with nearly 2400 points, and the second largest was cluster 2 with almost 800. The rest of the clusters were much smaller, around 1-25 observations. San Mateo was in cluster 7.   
+
+To determine which clustering method was better in relation to San Mateo, we identified the cluster that San Mateo County was in for each method, selected a few variables to compute the average of (White, Income, Employed, Transit), and computed the mean of those variables over the cluster that SMC was in for each method. We found:
+
+San Mateo County: White = 40.63, Income = 100370, Employed = 51.7, Transit = 9.25
+
+HClust method: White: 54.87, Income = 67645, Employed = 48, Transit = 7
+
+PC method: White: 53, Income = 88790, Employed = 51.5, Transit = 20.6
+
+Based off these numbers, we think the PC clustering method was more accurate at predicting the cluster SMC belonged to because the White percentage, average income, and employed percentage are closer to SMC's values than the averages obtained from the hierarchical clustering method.
+
+# Classification
+
+```{r, eval = F}
+# abb2name <- function(stateabb){
+#   ix <- match(stateabb, state.abb)
+#   out <- tolower(state.name[ix])
+#   return(out)
+# }
+# 
+# tmpwinner <- county_winner %>%
+#   ungroup %>%
+#   # coerce names to abbreviations
+#   mutate(state = abb2name(state)) %>%
+#   # everything lower case
+#   mutate(across(c(state, county), tolower)) %>%
+#   # remove county suffixes
+#   mutate(county = gsub(" county| columbia| city| parish", 
+#                        "", 
+#                        county)) 
+# 
+# tmpcensus <- census.ct %>% 
+#   mutate(across(c(State, County), tolower))
+# 
+# election_county <- tmpwinner %>%
+#   left_join(tmpcensus, 
+#             by = c("state"="State", "county"="County")) %>% 
+#   na.omit()
+# 
+# ## save meta information
+# election_meta <- election_county %>% 
+#   dplyr::select(c(county, fips1, state, votes, pct, total))
+# 
+# ## save predictors and class labels
+# election_county <- election_county %>% 
+#   dplyr::select(-c(fips1, state, votes, pct, total))
+# 
+# 
+# ## CONFIRM THIS STEP WITH PROFESSOR
+# election_cl <- election_county
+# #election_cl
+# 
+# # partition data into 80/20:
+# set.seed(2021)
+# election_part <- resample_partition(election_cl, c(test = 0.2, train = 0.8))
+# train <- as_tibble(election_part$train)
+# test <- as_tibble(election_part$test)
+```
+After merging the data, partition the result into 80% training and 20% testing partitions.
+
+18. Decision tree: train a decision tree on the training partition, and apply cost-complexity pruning. Visualize the tree before and after pruning. Estimate the misclassification errors on the test partition, and intepret and discuss the results of the decision tree analysis. Use your plot to tell a story about voting behavior in the US.
+```{r, fig.width=60, fig.height=20}
+abb2name <- function(stateabb){
+  ix <- match(stateabb, state.abb)
+  out <- tolower(state.name[ix])
+  return(out)
+}
+
+tmpwinner <- county_winner %>%
+  ungroup %>%
+  # coerce names to abbreviations
+  mutate(state = abb2name(state)) %>%
+  # everything lower case
+  mutate(across(c(state, county), tolower)) %>%
+  # remove county suffixes
+  mutate(county = gsub(" county| columbia| city| parish", 
+                       "", 
+                       county)) 
+
+tmpcensus <- census.ct %>% 
+  mutate(across(c(State, County), tolower))
+
+election_county <- tmpwinner %>%
+  left_join(tmpcensus, 
+            by = c("state"="State", "county"="County")) %>% 
+  na.omit()
+
+## save meta information
+election_meta <- election_county %>% 
+  dplyr::select(c(county, fips1, state, votes, pct, total))
+
+## save predictors and class labels
+election_county <- election_county %>% 
+  dplyr::select(-c(fips1, state, votes, pct, total))
+
+
+## CONFIRM THIS STEP WITH PROFESSOR
+election_cl <- election_county
+#election_cl
+
+# partition data into 80/20:
+set.seed(2021)
+election_cl <- election_county
+election_part <- resample_partition(election_cl, c(test = 0.2, train = 0.8))
+train <- as_tibble(election_part$train)
+test <- as_tibble(election_part$test)
+
+# tree without pruning
+#rm(train)
+train_2 <- train %>%
+  dplyr::select(-c(county, CountyTotal)) 
+
+
+test_2 <- test %>%
+  dplyr::select(-c(county, CountyTotal)) 
+
+
+
+nmin <- 5
+tree_opts <- tree.control(nobs=nrow(train_2),
+                          minsize = nmin,
+                          mindev= exp(-10))
+
+t_large <- tree(factor(train_2$candidate, labels = c('Trump', 'Clinton')) ~ ., data = train_2,
+                control = tree_opts, split = 'deviance',
+                na.action = na.pass)
+
+print("DECISION TREE BEFORE PRUNING")
+draw.tree(t_large, cex = 1, digits = 2)
+
+
+#prune tree
+nfolds <- 8
+cv_out <- cv.tree(t_large, K=nfolds)
+
+cv_df <- tibble(alpha = cv_out$k, impurity = cv_out$dev, size = cv_out$size)
+best_alpha <- slice_min(cv_df, impurity) %>%
+  slice_min(size)
+
+t_opt <- prune.tree(t_large, k = best_alpha$alpha)
+print("DECISION TREE AFTER PRUNING")
+draw.tree(t_opt, cex= 1, digits = 2)
+
+#error
+tree_pred_test <- predict(t_opt, newdata = test_2, type = 'class')
+tree_error <- table(tree_pred_test, test_2$candidate)
+row_sums_error <- tree_error / rowSums(tree_error)
+row_sums_error %>% pander()
+```
+
+
+The most important variables used in classification, based on the prune tree, are White, Transit, Unemployment, Production, Men, and Professional. The misclassification rate for Trump is 8.77% and for Clinton it's about 20%. The decision tree is more accurate at predicting a win for Trump than for Clinton. 
+
+Based off our pruned tree, it seems if a community was a majority of unemployed minority women, that community tended to vote for Clinton; whereas if a community was a majority of white people it tended to vote for Trump. If a community was more white but still professional and urbanized, then it might vote for Clinton. Overall, it seems like minorities and women voted for Clinton, while communities with a majority of white citizens, regardless of the level of professional and transit, tended to vote for Trump.  
+
+
+19. Train a logistic regression model on the training partition to predict the winning candidate in each county and estimate errors on the test partition. What are the significant variables? Are these consistent with what you observed in the decision tree analysis? Interpret the meaning of one or two significant coefficients of your choice in terms of a unit change in the variables. Did the results in your particular county (from question 14) match the predicted results?  
+```{r}
+
+train$result[train$candidate=="Hillary Clinton"]=1
+train$result[train$candidate=="Donald Trump"]=0
+test$result[test$candidate=="Hillary Clinton"]=1
+test$result[test$candidate=="Donald Trump"]=0
+
+train_1 <- train %>%
+  dplyr::select(-c(candidate, county)) %>%
+  as.data.frame()
+
+test_1 <- test %>%
+  dplyr::select(-c(candidate, county)) %>%
+  as.data.frame()
+
+log_train <- train_1 %>%
+  pull(result)
+
+log_test <- test_1 %>%
+  pull(result)
+
+
+
+fit_glm <- glm(result ~ ., family = "binomial", data = train_1)
+
+# compute estimated probabilities 
+p_hat_glm <- predict(fit_glm, test_1, type = 'response')
+
+y_hat_glm <- factor(p_hat_glm > 0.5, labels = c('0', '1'))
+
+error_glm <- table(test_1$result, y_hat_glm)
+error_glm %>% pander()
+
+
+
+
+# for seeing if results from county match predicted results:
+# find row index for county of interest (san mateo): in training or test data?
+# then pull out that particular prediction
+
+# or, slice original data frame to pull out only the row with county of interest
+# have a predict statement on just that one row
+
+
+# checking that the prediction works for LA county
+la_county <- train %>%
+  filter(county=="los angeles") %>%
+  dplyr::select(-c(candidate, county))
+
+fit_glm_la <- glm(result ~ ., family = "binomial", data = la_county)
+p_hat_glm_la <- predict(fit_glm_la, la_county, type = 'response')
+
+
+
+
+```
+
+We have that 0 = Donald Trump and 1 = Hillary Clinton. Most important variables, by magnitude are: FamilyWork, OtherTransp, WorkAtHome, Unemployment, Production, White, Drive, Employed, Citizen, Carpool, and Professional. 
+
+Interpretation of one of the variables: for a 1 unit increase in FamilyWork, there will be a 1.046 decrease towards the county voting for Trump, with all other variables held constant. We checked our prediction with LA County, and it correctly predicted that the county would vote for Hillary Clinton.
+
+20.  Compute ROC curves for the decision tree and logistic regression using predictions on the test data, and display them on the same plot. Based on your classification results, discuss the pros and cons of each method. Are the different classifiers more appropriate for answering different kinds of questions about the election?
+```{r}
+# logistic regression curve
+test_1 <- test_1 %>% na.omit()
+
+fit_logreg <- glm(result ~., family='binomial', data=test_1)
+preds_logreg <- predict(fit_logreg, test_1, type = "response")
+
+logreg_prediction <- prediction(predictions = preds_logreg, labels = test$candidate)
+
+# compute error rates as a function of probability threshold
+perf_qda <- performance(prediction.obj = logreg_prediction, 'tpr', 'fpr')
+
+#plot(perf_qda, colorize = T)
+
+
+# decision tree curve
+
+# redo tree creation with test data
+nmin <- 5
+tree_opts_test <- tree.control(nobs=nrow(test_2),
+                          minsize = nmin,
+                          mindev= exp(-10))
+
+t_large_test <- tree(factor(test_2$candidate, labels = c('Donald Trump', 'Hillary Clinton')) ~ ., data = test_2,
+                control = tree_opts_test, split = 'deviance',
+                na.action = na.pass)
+
+
+nfolds <- 8
+cv_out_test <- cv.tree(t_large_test, K=nfolds)
+
+cv_df_test <- tibble(alpha = cv_out_test$k, impurity = cv_out_test$dev, size = cv_out_test$size)
+best_alpha <- slice_min(cv_df_test, impurity) %>%
+  slice_min(size)
+
+t_opt_test <- prune.tree(t_large_test, k = best_alpha$alpha)
+
+
+x <- predict(t_opt_test, type='vector')
+
+prediction_dectree <- prediction(predictions = x[ ,2], labels = test_2$candidate)
+
+perf_qda_tree <- performance(prediction.obj = prediction_dectree, 'tpr', 'fpr')
+print("ROC Curves for Logistic Regression and Decision Tree")
+plot(perf_qda, col="blue") # this is the log_reg roc curve
+plot(perf_qda_tree, col="red", add = TRUE) # this is the decision tree roc curve
+```
+Based off the ROC curves, it seems like the logistic regression curve has a larger true positive rate than the decision tree curve. 
+
+Decision tree: The most important variables used in classification, based on the pruned tree, are White, Transit, Unemployment, Production, Men, and Professional. 
+
+Logistic regression: Most important variables, by magnitude: FamilyWork, OtherTransp, WorkAtHome, Unemployment, Production, White, Drive, Employed, Citizen, Carpool, and Professional.
+
+The decision tree method had fewer variables, so it was easier to interpret. However, it had a lower true positive rate than logistic regression.
+
+The logistic regression method included all of the variables in the pruned tree except for Transit, and had extra variables like FamilyWork, OtherTransp, WorkAtHome, Drive, Employed, Citizen, and Carpool (just based off the magnitude of the coefficients). The logistic regression model accounted for more variation in terms of the level of urbanization vs ruralness in a community. The variables included in logistic regression are all connected in that they paint a better picture of the kind of work/industries are present in communities, like business and tech vs. farming and agriculture.
+
+Some variables are better for answering different questions about the election. Many variables have to do with demographics, so those would be used in answering questions about how minorities or women tended to vote. Other variables like income would be used in answering questions about how underprivileged communities, or those who are less educated tend to vote. 
+
+# Taking it further
+
+21. This is an open question. Interpret and discuss any overall insights gained in this analysis and possible explanations. Use any tools at your disposal to make your case: visualize errors on the map, discuss what does or doesn't seem reasonable based on your understanding of these methods, propose possible directions (for example, collecting additional data or domain knowledge).  In addition, propose and tackle _at least_ one more interesting question. Creative and thoughtful analyses will be rewarded! 
+
+
+Based on all of the variables that we have considered, we have found that the most important variables are related to each other in a sense. 
+
+*Decision Trees: White, Transit, Unemployment, Production, Men, and Professional
+*PCA: ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White, Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome
+*Logistic Regression: FamilyWork, OtherTransp, WorkAtHome, Unemployment, Production, White, Drive, Employed, Citizen, Carpool, Professional
+
+From Question 17, we found that the PC clustering method was better at clustering San Mateo County than the hierarchical clustering.
+
+The most important variables that Decision Trees, PCA, and Logistic Regression share are: White, Unemployment, Professional. Overall, the general categories of variables that seem to have the most significant effect are race, income, and employment status. 
+
+Some possible directions are collecting more data about how many people in a county held political roles (governor, mayor, representatives, smaller office positions, etc.),  and the number of people who were married or had children. Collecting this additional data may have affected the election results. 
+
+
+We have used PC 1 to make scatterplots comparing two variables to reveal the voting behavior in specific communities. The variables for PC 1 are ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, and White.
+```{r}
+# PC 1 (new): ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White
+# PC 2 (new): Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome
+
+# we use this to figure out the most correlated variables
+# train %>%
+#   dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+#   cor()
+# 
+# train %>%
+#   dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+#   cor()
+
+# plotting Unemployment versus White
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Unemployment, y = White)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Unemployment vs. White by Candidate") +
+  theme_bw()
+```
+
+
+For the scatterplot of Unemployment versus White by Candidate, counties that have lower unemployment rates and a majority of white people tend to vote for Donald Trump. Counties with higher unemployment rates and a majority of non-white people tend to vote for Hillary Clinton. 
+
+```{r}
+# plotting Minority versus Income
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Minority, y = Income)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Minority vs. Income by Candidate") +
+  theme_bw()
+
+```
+
+
+For the scatterplot of Minority versus Income by Candidate, counties with a smaller minority population and lower income tend to vote for Donald Trump. Counties with a bigger minority population, and higher and lower income tend to vote for Hillary Clinton.
+
+
+```{r}
+# plotting Income versus Employed
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Income, y = Employed)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Income vs. Employed by Candidate") +
+  theme_bw()
+
+
+```
+
+For the scatterplot of Income versus Employed by Candidate, there isn't clear difference between counties with a lower average income regardless of the population that was employed since the observations for Trump and Clinton are very clumped together.
+
+```{r}
+# plotting Professional versus Income 
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Professional, y = Income)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Professional vs. Income by Candidate") +
+  theme_bw()
+
+```
+
+
+For the scatterplot of Professional versus Income by Candidate, there also isn't clear difference between counties with a lower average income regardless of the professional population. However, it can be seen with the outliers that counties with a high professional population and high income voted for Hillary Clinton.
+
+```{r}
+
+# plotting Poverty versus Unemployment
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Poverty, y = Unemployment)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Poverty vs. Unemployment by Candidate") +
+  theme_bw()
+
+```
+
+
+For the scatterplot of Poverty versus Unemployment by Candidate, there isn't a super clear difference between counties with a lower unemployment rate and a lower poverty population. However, it can be seen with the outliers that counties with a higher unemployment rate and a higher poverty rate either voted for Donald Trump or Hillary Clinton. 
+
+
+
+Question to investigate: since we have already looked at decision trees and logistic regression, we want to see how well KNN predicts the winning candidate by county. We will use our analysis from question 15 to determine which subset of variables to use for KNN, find the best value of k, and determine which classification method had the lowest misclassification error from KNN, logistic regression, and decision trees.
+
+```{r}
+# PC 1 TRAIN
+x_mx <- train %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+y <- train %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat <- knn(train = x_mx, test = x_mx, cl = y, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 1 Train with k =", i, ": ", mean(y != y_hat), "\n")
+}
+
+
+# PC 2 TRAIN
+x_mx2 <- train %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+y2 <- train %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat2 <- knn(train = x_mx2, test = x_mx2, cl = y2, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 2 Train with k =", i, ": ", mean(y2 != y_hat2), "\n")
+}
+
+
+
+# PC 1 TEST
+x_mx_test_1 <- test %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+y_test_1 <- test %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat_test <- knn(train = x_mx, test = x_mx_test_1, cl = y, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 1 Test with k =", i, ": ", mean(y_test_1 != y_hat_test), "\n")
+}
+
+
+
+# PC 2 TEST
+x_mx_test_2 <- test %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+y_test_2 <- test %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat_test_2 <- knn(train = x_mx2, test = x_mx_test_2, cl = y2, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC2 Test with k =", i, ": ", mean(y_test_2 != y_hat_test_2), "\n")
+}
+
+```
+
+```{r}
+# LOOCV for k =10 for PC 1
+x_mx_loocv1 <- election_county %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+
+y_loocv1 <- election_county %>%
+  pull(candidate)
+
+y_hat_cv1 <- knn.cv(train=x_mx_loocv1, cl=y_loocv1, k=10)
+```
+
+Error rates for PC 1 LOOCV with k = 10:
+
+```{r}
+knn_errors <- table(y_loocv1, y_hat_cv1) 
+mean(y_loocv1 != y_hat_cv1)
+```
+
+```{r}
+error_table <- knn_errors / rowSums(knn_errors)
+error_table %>% pander()
+
+```
+
+```{r}
+# LOOCV for k = 15 for PC 2
+x_mx_loocv2 <- election_county %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+
+y_loocv2 <- election_county %>%
+  pull(candidate)
+
+y_hat_cv2 <- knn.cv(train=x_mx_loocv2, cl=y_loocv2, k=15)
+```
+
+Error rates for PC 2 LOOCV with k = 15:
+
+```{r}
+
+knn_errors2 <- table(y_loocv2, y_hat_cv2) 
+mean(y_loocv2 != y_hat_cv2)
+
+
+table_errors2 <- knn_errors2 / rowSums(knn_errors2)
+table_errors2 %>% pander()
+
+
+```
+
+
+Decision Tree Error Rates:
+
+```{r}
+# For Decision Trees:
+#tree_pred_test <- predict(t_opt, newdata = test_2, type = 'class')
+tree_error <- table(tree_pred_test, test_2$candidate)
+num1 <- tree_error / rowSums(tree_error)
+num1 %>% pander()
+```
+
+
+Logistic Regression Error Rates:
+
+```{r}
+
+# For Logistic Regression:
+#p_hat_glm <- predict(fit_glm, test_1, type = 'response')
+#y_hat_glm <- factor(p_hat_glm > 0.5, labels = c('0', '1'))
+error_glm <- table(test_1$result, y_hat_glm)
+num2 <- error_glm / rowSums(error_glm)
+num2 %>% pander()
+
+
+```
+
+Based off the misclassification error rates (0 = Trump and 1 = Clinton), the pruned tree had the lowest misclassification rates, so for this data, it was the best classification method to use.  
+
+
+
+### APPENDIX (ONLY CODE & OUTPUT)
+4. Inspect rows with `fips=2000`. Provide a reason for excluding them. Drop these observations -- please write over `election_raw` -- and report the data dimensions after removal. 
+
+```{r, echo = T, eval = T, results='markup'}
+election_raw %>%
+  filter(fips == 2000) 
+
+election_raw <- election_raw %>%
+  subset(fips != 2000)
+
+election_raw 
+```
+
+5. Separate the rows of `election_raw` into separate federal-, state-, and county-level data frames:
+
+    * Store federal-level tallies as `election_federal`.
+    
+    * Store state-level tallies as `election_state`.
+    
+    * Store county-level tallies as `election`. Coerce the `fips` variable to numeric.
+```{r, echo = T, eval = T, results='markup'}
+election_federal <- election_raw %>%
+  subset(state == "US")
+
+election_state <- election_raw %>%
+  filter(state != "US", is.na(county)) 
+  
+election <- election_raw %>%
+  filter(state != "US", !is.na(county))
+
+# for county-level tallies
+election <- election %>%
+  mutate(fips1 = as.numeric(fips)) %>%
+  dplyr::select(-fips)
+```
+
+6. How many named presidential candidates were there in the 2016 election? Draw a bar graph of all votes received by each candidate, and order the candidate names by decreasing vote counts. (You may need to log-transform the vote axis.)
+
+```{r, echo = T, eval = T, results='markup'}
+# use ggplot
+ggplot(data = election_federal, aes(x = reorder(candidate, -log(votes)), y = log(votes))) +
+  geom_bar(stat = "identity") +
+  ggtitle("LOG NUMBER OF VOTES PER PRESIDENTIAL CANDIDATE") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+7. Create `county_winner` and `state_winner` by taking the candidate with the highest proportion of votes. (Hint: to create `county_winner`, start with `election`, group by `fips`, compute `total` votes, and `pct = votes/total`. Then choose the highest row using `slice_max` (variable `state_winner` is similar).)
+```{r, echo = T, eval = T, results='markup'}
+county_winner <- election %>%
+  group_by(fips1) %>%
+  mutate(total = sum(votes), pct=votes/total) %>%
+  slice_max(pct)
+  
+state_winner <- election_state %>% 
+  group_by(state) %>%
+  mutate(total=sum(votes), pct=votes/total) %>%
+  slice_max(pct)
+```
+
+
+8. Draw a county-level map with `map_data("county")` and color by county.
+
+```{r, echo = T, eval = T, results='markup'}
+counties <- map_data("county")
+
+ggplot(counties) + 
+  geom_polygon(aes(x = long, 
+                   y = lat, 
+                   fill = subregion, 
+                   group = group), 
+               color = "white") + 
+  coord_fixed(1.3) + # avoid stretching
+  guides(fill=FALSE) + # no fill legend
+  theme_nothing() # no axes
+```
+
+
+9. Use the following function to create a `fips` variable in the `states` data frame with values that match the `fips` variable in `election_state`.
+```{r, echo = T, eval = T, results='markup'}
+name2abb <- function(statename){
+  ix <- match(statename, tolower(state.name))
+  out <- state.abb[ix]
+  return(out)
+}
+
+states <- states %>%
+  mutate(fips = name2abb(region))
+```
+
+
+10. Use `left_join` to merge the tables and use the result to create a map of the election results by state. Your figure will look similar to this state level [New York Times map](https://www.nytimes.com/elections/results/president). (Hint: use `scale_fill_brewer(palette="Set1")` for a red-and-blue map.)
+
+```{r, echo = T, eval = T, results='markup'}
+merge_tables <- left_join(states, state_winner, by = c("fips" = "state"))
+
+
+distinct_states <- merge_tables %>%
+  dplyr::select(region, candidate) %>%
+  distinct() %>%
+  na.omit()
+
+blue_states <- distinct_states %>%
+  filter(candidate == "Hillary Clinton")
+red_states <- distinct_states %>%
+  filter(candidate == "Donald Trump")
+
+
+ggplot(states, aes(x=long, y=lat, group = group)) +
+  coord_fixed(1.3) +
+  geom_polygon(fill="grey", colour = "white") +
+  geom_polygon(fill="blue", data = filter(states, region %in% blue_states$region)) +
+  geom_polygon(fill="red", data = filter(states, region %in% red_states$region)) +
+  ggtitle("MAP OF ELECTION RESULTS BY STATE") +
+  scale_fill_brewer(palette="Set1")
+```
+
+
+11. Now create a county-level map. The county-level map data does not have a `fips` value, so to create one, use information from `maps::county.fips`: split the `polyname` column to `region` and `subregion` using `tidyr::separate`, and use `left_join()` to combine `county.fips` with the county-level map data. Then construct the map. Your figure will look similar to county-level [New York Times map](https://www.nytimes.com/elections/results/president).
+
+```{r, echo = T, eval = T, results='markup'}
+split_region_subregion <- maps::county.fips %>%
+  tidyr::separate(col = polyname, into = c("region", "subregion"), sep = ',')
+
+
+
+merge_counties <- left_join(county_winner, split_region_subregion, by = c("county" = "subregion")) 
+
+distinct_counties <- merge_counties %>%
+  dplyr::select(county, candidate) 
+
+distinct_counties <- distinct_counties %>%
+  mutate(lowercase = tolower(county))
+blue_counties <- distinct_counties %>%
+  filter(candidate == "Hillary Clinton")
+
+red_counties <- distinct_counties %>%
+  filter(candidate == "Donald Trump")
+
+#counties$subregion
+x <- blue_counties$lowercase
+
+y <- str_remove(x, " county")
+
+m <- red_counties$lowercase
+
+n <- str_remove(m, " county")
+
+
+ggplot(counties, aes(x=long, y=lat, group = group)) +
+  coord_fixed(1.3) +
+  geom_polygon(fill="grey", colour = "white") +
+  geom_polygon(fill="blue", data = filter(counties, counties$subregion %in% y)) +
+  geom_polygon(fill="red", data = filter(counties, counties$subregion %in% n)) +
+  scale_fill_brewer(palette="Set1") +
+  ggtitle("ELECTION RESULTS BY COUNTY") +
+  guides(fill = FALSE)
+```
+
+12. Create a visualization of your choice using `census` data.
+```{r, echo = T, eval = T, results='markup'}
+
+census_nona <- census %>%
+  na.omit("White", "TotalPop")
+
+# plot of demographics by county
+census_whitepct <- census_nona %>%
+  group_by(County) %>%
+  mutate(totalwhite = sum(TotalPop*(0.01*White)), total = sum(TotalPop), whitepct =
+           totalwhite/total) %>%
+  slice_max(whitepct)
+  
+# white people by state
+
+# library
+library(tidyverse)
+library(geojsonio)
+library(RColorBrewer)
+library(rgdal)
+
+# Download the Hexagones boundaries at geojson format here: https://team.carto.com/u/andrew/tables/andrew.us_states_hexgrid/public/map.
+
+# Load this file. (Note: I stored in a folder called DATA)
+spdf <- geojson_read("~/Downloads/us_states_hexgrid.geojson.json",  what = "sp")
+
+# Bit of reformating
+spdf@data = spdf@data %>%
+  mutate(google_name = gsub(" \\(United States\\)", "", google_name))
+
+# I need to 'fortify' the data to be able to show it with ggplot2 (we need a data frame format)
+library(broom)
+spdf@data = spdf@data %>% 
+  mutate(google_name = gsub(" \\(United States\\)", "", google_name))
+spdf_fortified <- tidy(spdf, region = "google_name")
+
+# Calculate the centroid of each hexagon to add the label:
+library(rgeos)
+centers <- cbind.data.frame(data.frame(gCentroid(spdf, byid=TRUE), id=spdf@data$iso3166_2))
+ 
+# Now I can plot this shape easily as described before:
+library(mapproj)
+
+# Merge geospatial and numerical information
+spdf_fortified <- spdf_fortified %>%
+  left_join(., census_whitepct, by = c("id" = "State")) 
+ 
+# Make a first chloropleth map
+ggplot() +
+  geom_polygon(data = spdf_fortified, aes(fill = whitepct, x = long, y = lat, group = group)) +
+  geom_text(data=centers, aes(x=x, y=y, label=id)) +
+  #scale_fill_gradient(trans = "log") +
+  #geom_text(data = census_whitepct, aes(x=State, y=whitepct, label="State")) +
+  theme_void() +
+  coord_map() +
+  ggtitle("Density of White Population By State")
+```
+
+
+13. The `census` data contains high resolution information (more fine-grained than county-level). Aggregate the information into county-level data by computing population-weighted averages of each attribute for each county by carrying out the following steps:
+    
+* Clean census data, saving the result as `census_del`: 
+  
+   + filter out any rows of `census` with missing values;
+   + convert `Men`, `Employed`, and `Citizen` to percentages;
+   + compute a `Minority` variable by combining `Hispanic`, `Black`, `Native`, `Asian`, `Pacific`, and remove these variables after creating `Minority`; and
+   + remove `Walk`, `PublicWork`, and `Construction`.
+ 
+* Create population weights for sub-county census data, saving the result as `census_subct`: 
+    + group `census_del` by `State` and `County`;
+    + use `add_tally()` to compute `CountyPop`; 
+    + compute the population weight as `TotalPop/CountyTotal`;
+    + adjust all quantitative variables by multiplying by the population weights.
+    
+* Aggregate census data to county level, `census_ct`: group the sub-county data `census_subct` by state and county and compute population-weighted averages of each variable by taking the sum (since the variables were already transformed by the population weights)
+    
+* Print the first few rows and columns of `census_ct`.
+
+```{r, echo = T, eval = T, results='markup'}
+# Create census.del:
+census.del <- census %>% 
+  filter(complete.cases(.)) %>%
+  mutate(Men=Men/TotalPop*100,
+         Employed=Employed/TotalPop*100,
+         Citizen=Citizen/TotalPop*100,
+         Minority=Hispanic+Black+Native+Asian+Pacific) %>%
+  dplyr::select(-Women, -Hispanic, -Black, -Native, -Asian, -Pacific,
+-Walk, -PublicWork, -Construction)
+# Create census.subct:
+census.subct <- census.del %>% 
+  group_by(State, County) %>%
+  add_tally(TotalPop) %>%
+  mutate(CountyTotal=n) %>%
+  mutate(Weight = TotalPop/CountyTotal)%>%
+  dplyr::select(-n)
+
+#census.subct
+# Create census.ct:
+census.ct <- census.subct %>%
+  summarise_at(vars(TotalPop:CountyTotal),
+               funs(weighted.mean(., Weight))) %>%
+  ungroup()
+head(census.ct) %>%
+  pander()
+```
+
+14. If you were physically located in the United States on election day for the 2016 presidential election, what state and county were you in? Compare and contrast the results and demographic information for this county with the state it is located in. If you were not in the United States on election day, select any county. Do you find anything unusual or surprising? If so, explain; if not, explain why not.
+```{r, echo = T, eval = T, results='markup'}
+# Anum and Alec
+la_county <- census.ct %>%
+  filter(County == "Los Angeles")
+#la_county
+
+# Amiya
+santa_clara <- census.ct %>%
+  filter(County == "Santa Clara")
+#santa_clara
+
+
+california_data <- census.ct %>%
+  filter(State == "California")
+#california_data
+```
+
+
+15. Carry out PCA for both county & sub-county level census data. Compute the first two principal components PC1 and PC2 for both county and sub-county respectively. Discuss whether you chose to center and scale the features and the reasons for your choice. Examine and interpret the loadings.
+```{r, fig.height = 3, echo = T, eval = T, results='markup'}
+# county level data
+census_std <- census.ct %>%
+  dplyr::select(-c("State", "County")) %>% # drop pop weight and county pop
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+# compute principal components
+x_svd <- svd(census_std)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:2]
+#pc_loadings
+
+census_pc <- as.matrix(census_std) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:2, sep = '')
+
+z_mx <- census_std %*% x_svd$v
+
+# loadings
+pc_loadings %>%
+  as.data.frame() %>%
+  mutate(variable = colnames(census_std)) %>%
+  rename(PC1 = V1, PC2 = V2) %>%
+  gather(key = 'PC', value = 'Loading', 1:2) %>%
+  arrange(variable) %>%
+  ggplot(aes(x = variable, y = Loading)) +
+  geom_point(aes(shape = PC)) +
+  theme_bw() +
+  geom_hline(yintercept = 0, color = 'blue') +
+  geom_path(aes(linetype = PC, group = PC, col = PC)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("FIRST 2 PC LOADINGS FOR COUNTY LEVEL CENSUS DATA") +
+  labs(x = '')
+
+# sub-county level
+census_sub_std <- census.subct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("CensusTract", "State", "County")) %>%
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+# used in question 16 so pc_vars_subcounty and census_sub_std had same # of columns
+census_sub_std1 <- census.subct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("CensusTract", "State", "County", "Weight")) %>%
+  na.omit() %>%
+  scale(center=T, scale=T)
+
+# compute principal components
+x_svd <- svd(census_sub_std)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:2]
+#pc_loadings
+
+census_pc <- as.matrix(census_sub_std) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:2, sep = '')
+
+z_mx <- census_sub_std %*% x_svd$v
+
+# loadings
+pc_loadings %>%
+  as.data.frame() %>%
+  mutate(variable = colnames(census_sub_std)) %>%
+  rename(PC1 = V1, PC2 = V2) %>%
+  gather(key = 'PC', value = 'Loading', 1:2) %>%
+  arrange(variable) %>%
+  ggplot(aes(x = variable, y = Loading)) +
+  geom_point(aes(shape = PC)) +
+  theme_bw() +
+  geom_hline(yintercept = 0, color = 'blue') +
+  geom_path(aes(linetype = PC, group = PC, col = PC)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("FIRST 2 PC LOADINGS FOR SUB-COUNTY LEVEL CENSUS DATA") +
+  labs(x = '')
+```
+
+
+16. Determine the minimum number of PCs needed to capture 90% of the variance for both the county and sub-county analyses. Plot the proportion of variance explained and cumulative variance explained for both county and sub-county analyses.
+```{r, echo = T, eval = T, results='markup'}
+# county data
+pc_vars_county <- x_svd$d^2/(nrow(as.matrix(census_std)) - 1)
+n_pc <- length(pc_vars_county)
+
+tibble(PC = n_pc,
+       Proportion = pc_vars_county/sum(pc_vars_county)) %>%
+  mutate(Cumulative = cumsum(Proportion)) %>%
+  gather(key = 'measure', value = 'Variance Explained', 2:3) %>%
+  ggplot(aes(x = PC, y = `Variance Explained`)) +
+  geom_point() +
+  geom_path() +
+  facet_wrap(~ measure) +
+  theme_bw() +
+  scale_x_continuous(breaks = 1:30, labels = as.character(1:30)) + 
+  ggtitle("PROPORTION OF VARIANCE EXPLAINED & CUMULATIVE VARIANCE FOR COUNTY")
+
+
+# sub-county data
+
+pc_vars_subcounty <- x_svd$d^2/(nrow(as.matrix(census_sub_std1)) - 1)
+tibble(PC = 1:n_pc,
+       Proportion = pc_vars_subcounty/sum(pc_vars_subcounty)) %>%
+  mutate(Cumulative = cumsum(Proportion)) %>%
+  gather(key = 'measure', value = 'Variance Explained', 2:3) %>%
+  ggplot(aes(x = PC, y = `Variance Explained`)) +
+  geom_point() +
+  geom_path() +
+  facet_wrap(~ measure) +
+  theme_bw() +
+  scale_x_continuous(breaks = 1:30, labels = as.character(1:30)) +
+  ggtitle("PROPORTION OF VARIANCE EXPLAINED & CUMULATIVE VARIANCE FOR SUB-COUNTY")
+```
+
+
+17. With `census_ct`, perform hierarchical clustering with complete linkage.  Cut the tree to partition the observations into 10 clusters. Re-run the hierarchical clustering algorithm using the first 5 principal components the county-level data as inputs instead of the original features. Compare and contrast the results. For both approaches investigate the cluster that contains San Mateo County. Which approach seemed to put San Mateo County in a more appropriate cluster? Comment on what you observe and discuss possible explanations for these observations.
+```{r, echo = T, eval = T, results='markup'}
+
+census_ct <- census.ct
+# hierarchical clustering with complete linkage
+census_ct_std <- census.ct %>%
+  na.omit()
+
+d_mx_clust <- dist(census_ct_std, method = 'euclidean')
+
+# compute hierarchical clustering
+hclust_out <- hclust(d_mx_clust, method = 'complete')
+
+clusters <- cutree(hclust_out, k = 10) %>% 
+  factor(labels = paste('cluster', 1:10))
+
+
+# determining which cluster San Mateo is in
+cluster.SM_clust <- clusters[which(census_ct$Group.2 == "San Mateo")]
+index <- which(clusters == cluster.SM_clust)
+# San Mateo is in cluster 2
+
+
+
+# with 5 PCs
+census_std_1 <- census.ct %>%
+  as.data.frame() %>%
+  dplyr::select(-c("State", "County")) %>%
+  na.omit() %>%
+  scale(center = T, scale = T)
+
+# compute principal components
+x_svd <- svd(census_std_1)
+v_svd <- x_svd$v
+pc_loadings <- v_svd[, 1:5]
+#pc_loadings
+
+census_pc <- as.matrix(census_std_1) %*% pc_loadings
+colnames(census_pc) <- paste('PC', 1:5, sep = '')
+
+z_mx <- census_std_1 %*% x_svd$v
+
+
+# hierarchical clustering for PC5
+d_mx_pc <- dist(census_std_1, method = 'euclidean')
+
+# compute hierarchical clustering
+hclust_out_pc <- hclust(d_mx_pc, method = 'complete')
+
+clusters_pc <- cutree(hclust_out_pc, k = 10) %>% 
+  factor(labels = paste('cluster', 1:10))
+
+# count number of data points per cluster
+print("Number of data points per cluster using first hierarchical clustering: ")
+tibble(clusters) %>% count(clusters) %>% pander()
+
+print("Number of data points per cluster using first 5 PCs: ")
+tibble(clusters_pc) %>% count(clusters_pc) %>% pander()
+
+
+# determine which cluster San Mateo is in for PC clustering
+cluster.SM_pc <- clusters_pc[which(census_ct$Group.2 == "San Mateo")]
+index <- which(clusters_pc == cluster.SM_pc)
+# San Mateo is in cluster 1
+
+# hclust method: comparing SMC to other obs in that cluster
+census_hclust <- census.ct %>%
+  mutate(cluster = clusters) 
+
+census_compare_hclust <- census_hclust %>%
+  filter(cluster == "cluster 2") %>%
+  dplyr::select(c(White, Income, Employed, Transit)) %>%
+  na.omit() %>%
+  summarize(White = mean(White), Income = mean(Income), Employed = mean(Employed),
+            Transit = mean(Transit))
+
+
+
+# White: 54.87, Income = 67645, Employed = 48, Transit = 7
+
+# comparing to San Mateo:
+SMC <- census.ct %>%
+  filter(County == "San Mateo") %>%
+  dplyr::select(c(White, Income, Employed, Transit))
+
+
+# San Mateo: White: 40.63, Income = 100370, Employed = 51.7, Transit = 9.25
+
+# PC method: comparing SMC to other obs in that cluster
+census_pc <- census.ct %>%
+  mutate(cluster = clusters_pc) 
+
+census_compare_pc <- census_pc %>%
+  filter(cluster == "cluster 7") %>%
+  dplyr::select(c(White, Income, Employed, Transit)) %>%
+  na.omit() %>%
+  summarize(White = mean(White), Income = mean(Income), Employed = mean(Employed),
+            Transit = mean(Transit))
+
+
+
+# PC method: White: 53, Income = 88790, Employed = 51.5, Transit = 20.6
+print("Averages for San Mateo County")
+SMC %>% pander()
+
+print("Averages for Hierarchical Cluster with San Mateo County")
+census_compare_hclust %>% pander()
+
+print("Averages for PC 5 Cluster with San Mateo County")
+census_compare_pc %>% pander()
+
+```
+
+
+18. Decision tree: train a decision tree on the training partition, and apply cost-complexity pruning. Visualize the tree before and after pruning. Estimate the misclassification errors on the test partition, and intepret and discuss the results of the decision tree analysis. Use your plot to tell a story about voting behavior in the US.
+```{r, echo = T, eval = T, results='markup'}
+election_cl <- election_county
+
+# partition data into 80/20:
+set.seed(2021)
+election_cl <- election_county
+election_part <- resample_partition(election_cl, c(test = 0.2, train = 0.8))
+train <- as_tibble(election_part$train)
+test <- as_tibble(election_part$test)
+
+# tree without pruning
+#rm(train)
+train_2 <- train %>%
+  dplyr::select(-c(county, CountyTotal)) 
+
+
+test_2 <- test %>%
+  dplyr::select(-c(county, CountyTotal))
+
+nmin <- 5
+tree_opts <- tree.control(nobs=nrow(train_2),
+                          minsize = nmin,
+                          mindev= exp(-10))
+
+t_large <- tree(factor(train_2$candidate, labels = c('Trump', 'Clinton')) ~ ., data = train_2,
+                control = tree_opts, split = 'deviance',
+                na.action = na.pass)
+
+print("DECISION TREE BEFORE PRUNING")
+draw.tree(t_large, cex = 1, digits = 2)
+
+
+#prune tree
+nfolds <- 8
+cv_out <- cv.tree(t_large, K=nfolds)
+
+cv_df <- tibble(alpha = cv_out$k, impurity = cv_out$dev, size = cv_out$size)
+best_alpha <- slice_min(cv_df, impurity) %>%
+  slice_min(size)
+
+
+t_opt <- prune.tree(t_large, k = best_alpha$alpha)
+print("DECISION TREE AFTER PRUNING")
+draw.tree(t_opt, cex= 1, digits = 2)
+
+#error
+tree_pred_test <- predict(t_opt, newdata = test_2, type = 'class')
+tree_error <- table(tree_pred_test, test_2$candidate)
+row_sums_error <- tree_error / rowSums(tree_error)
+row_sums_error %>% pander()
+```
+
+
+19. Train a logistic regression model on the training partition to predict the winning candidate in each county and estimate errors on the test partition. What are the significant variables? Are these consistent with what you observed in the decision tree analysis? Interpret the meaning of one or two significant coefficients of your choice in terms of a unit change in the variables. Did the results in your particular county (from question 14) match the predicted results?  
+```{r, echo = T, eval = T, results='markup'}
+
+train$result[train$candidate=="Hillary Clinton"]=1
+train$result[train$candidate=="Donald Trump"]=0
+test$result[test$candidate=="Hillary Clinton"]=1
+test$result[test$candidate=="Donald Trump"]=0
+
+train_1 <- train %>%
+  dplyr::select(-c(candidate, county)) %>%
+  as.data.frame()
+
+test_1 <- test %>%
+  dplyr::select(-c(candidate, county)) %>%
+  as.data.frame()
+
+log_train <- train_1 %>%
+  pull(result)
+
+log_test <- test_1 %>%
+  pull(result)
+
+fit_glm <- glm(result ~ ., family = "binomial", data = train_1)
+
+# compute estimated probabilities 
+p_hat_glm <- predict(fit_glm, test_1, type = 'response')
+
+y_hat_glm <- factor(p_hat_glm > 0.5, labels = c('0', '1'))
+
+error_glm <- table(test_1$result, y_hat_glm)
+error_glm %>% pander()
+
+# checking that the prediction works for LA county
+la_county <- train %>%
+  filter(county=="los angeles") %>%
+  dplyr::select(-c(candidate, county))
+
+fit_glm_la <- glm(result ~ ., family = "binomial", data = la_county)
+p_hat_glm_la <- predict(fit_glm_la, la_county, type = 'response')
+```
+
+
+20.  Compute ROC curves for the decision tree and logistic regression using predictions on the test data, and display them on the same plot. Based on your classification results, discuss the pros and cons of each method. Are the different classifiers more appropriate for answering different kinds of questions about the election?
+```{r, echo = T, eval = T, results='markup'}
+# logistic regression curve
+test_1 <- test_1 %>% na.omit()
+
+fit_logreg <- glm(result ~., family='binomial', data=test_1)
+preds_logreg <- predict(fit_logreg, test_1, type = "response")
+
+logreg_prediction <- prediction(predictions = preds_logreg, labels = test$candidate)
+
+# compute error rates as a function of probability threshold
+perf_qda <- performance(prediction.obj = logreg_prediction, 'tpr', 'fpr')
+
+# decision tree curve
+
+nmin <- 5
+tree_opts_test <- tree.control(nobs=nrow(test_2),
+                          minsize = nmin,
+                          mindev= exp(-10))
+
+t_large_test <- tree(factor(test_2$candidate, labels = c('Donald Trump', 'Hillary Clinton')) ~ ., data = test_2,
+                control = tree_opts_test, split = 'deviance',
+                na.action = na.pass)
+
+
+nfolds <- 8
+cv_out_test <- cv.tree(t_large_test, K=nfolds)
+
+cv_df_test <- tibble(alpha = cv_out_test$k, impurity = cv_out_test$dev, size = cv_out_test$size)
+best_alpha <- slice_min(cv_df_test, impurity) %>%
+  slice_min(size)
+
+t_opt_test <- prune.tree(t_large_test, k = best_alpha$alpha)
+
+x <- predict(t_opt_test, type='vector')
+
+prediction_dectree <- prediction(predictions = x[ ,2], labels = test_2$candidate)
+
+perf_qda_tree <- performance(prediction.obj = prediction_dectree, 'tpr', 'fpr')
+print("ROC Curves for Logistic Regression and Decision Tree")
+plot(perf_qda, col="blue") # this is the log_reg roc curve
+plot(perf_qda_tree, col="red", add = TRUE) # this is the decision tree roc curve
+```
+
+
+21. This is an open question. Interpret and discuss any overall insights gained in this analysis and possible explanations. Use any tools at your disposal to make your case: visualize errors on the map, discuss what does or doesn't seem reasonable based on your understanding of these methods, propose possible directions (for example, collecting additional data or domain knowledge).  In addition, propose and tackle _at least_ one more interesting question. Creative and thoughtful analyses will be rewarded!
+
+```{r, echo = T, eval = T, results='markup'}
+
+# plotting Unemployment versus White
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Unemployment, y = White)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Unemployment vs. White by Candidate") +
+  theme_bw()
+
+# plotting Minority versus Income
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Minority, y = Income)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Minority vs. Income by Candidate") +
+  theme_bw()
+
+
+# plotting Income versus Employed
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Income, y = Employed)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Income vs. Employed by Candidate") +
+  theme_bw()
+
+
+# plotting Professional versus Income 
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Professional, y = Income)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Professional vs. Income by Candidate") +
+  theme_bw()
+
+
+
+# plotting Poverty versus Unemployment
+train %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Poverty, y = Unemployment)) +
+  geom_point(aes(color = candidate), alpha = 0.5) +
+  ggtitle("Poverty vs. Unemployment by Candidate") +
+  theme_bw()
+
+```
+
+
+Question to investigate: since we have already looked at decision trees and logistic regression, we want to see how well KNN predicts the winning candidate by county. We will use our analysis from question 15 to determine which subset of variables to use for KNN, find the best value of k, and determine which classification method had the lowest misclassification error from KNN, logistic regression, and decision trees.
+
+```{r, echo = T, eval = T, results='markup'}
+# PC 1 TRAIN
+x_mx <- train %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+y <- train %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat <- knn(train = x_mx, test = x_mx, cl = y, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 1 Train with k =", i, ": ", mean(y != y_hat), "\n")
+}
+
+
+# PC 2 TRAIN
+x_mx2 <- train %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+y2 <- train %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat2 <- knn(train = x_mx2, test = x_mx2, cl = y2, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 2 Train with k =", i, ": ", mean(y2 != y_hat2), "\n")
+}
+
+
+
+# PC 1 TEST
+x_mx_test_1 <- test %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+y_test_1 <- test %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat_test <- knn(train = x_mx, test = x_mx_test_1, cl = y, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC 1 Test with k =", i, ": ", mean(y_test_1 != y_hat_test), "\n")
+}
+
+
+# PC 2 TEST
+x_mx_test_2 <- test %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+y_test_2 <- test %>% pull(candidate)
+
+for (i in c(1, 5, 10, 15, 20, 25)){
+  y_hat_test_2 <- knn(train = x_mx2, test = x_mx_test_2, cl = y2, k = i) 
+  #table(y, y_hat)
+  cat("misclassification error for PC2 Test with k =", i, ": ", mean(y_test_2 != y_hat_test_2), "\n")
+}
+
+# LOOCV for k =10 for PC 1
+x_mx_loocv1 <- election_county %>%
+  dplyr::select(c(ChildPoverty, Employed, Income, IncomePerCap, Minority, Poverty, Professional, Unemployment, White)) %>%
+  as.matrix()
+
+y_loocv1 <- election_county %>%
+  pull(candidate)
+
+y_hat_cv1 <- knn.cv(train=x_mx_loocv1, cl=y_loocv1, k=10)
+
+
+knn_errors <- table(y_loocv1, y_hat_cv1) 
+mean(y_loocv1 != y_hat_cv1)
+
+
+error_table <- knn_errors / rowSums(knn_errors)
+error_table %>% pander()
+
+
+# LOOCV for k = 15 for PC 2
+x_mx_loocv2 <- election_county %>%
+  dplyr::select(c(Citizen, FamilyWork, Income, IncomeErr, MeanCommute, Minority, Office, PrivateWork, Service, TotalPop, White, WorkAtHome)) %>%
+  as.matrix()
+
+y_loocv2 <- election_county %>%
+  pull(candidate)
+
+y_hat_cv2 <- knn.cv(train=x_mx_loocv2, cl=y_loocv2, k=15)
+
+
+
+knn_errors2 <- table(y_loocv2, y_hat_cv2) 
+mean(y_loocv2 != y_hat_cv2)
+
+
+table_errors2 <- knn_errors2 / rowSums(knn_errors2)
+table_errors2 %>% pander()
+
+
+# For Decision Trees error rate:
+tree_error <- table(tree_pred_test, test_2$candidate)
+num1 <- tree_error / rowSums(tree_error)
+num1 %>% pander()
+
+# For Logistic Regression error rate:
+error_glm <- table(test_1$result, y_hat_glm)
+num2 <- error_glm / rowSums(error_glm)
+num2 %>% pander()
+```
+
